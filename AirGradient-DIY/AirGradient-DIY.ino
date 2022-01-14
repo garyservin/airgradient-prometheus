@@ -11,6 +11,11 @@
 #include <Wire.h>
 #include "SSD1306Wire.h"
 
+// Linka
+#include <time.h>                     // To get current time
+#include <ArduinoJson.h>              // https://github.com/bblanchon/ArduinoJson
+#include <ESP8266HTTPClient.h>        // HTTP Client
+
 AirGradient ag = AirGradient();
 
 // Config ----------------------------------------------------------------------
@@ -22,6 +27,7 @@ const char* deviceId = "";
 const bool hasPM = true;
 const bool hasCO2 = true;
 const bool hasSHT = true;
+const bool pushLinka = true;
 
 // WiFi and IP connection info.
 const char* ssid = "PleaseChangeMe";
@@ -42,6 +48,37 @@ const int updateFrequency = 5000;
 // For housekeeping.
 long lastUpdate;
 int counter = 0;
+
+// Linka related config
+#define JSON_BUFFER 256
+char http_data_template[] = "[{"
+                            "\"sensor\": \"%s\","
+                            "\"source\": \"%s\","
+                            "\"description\": \"%s\","
+                            "\"pm1dot0\": %d,"
+                            "\"pm2dot5\": %d,"
+                            "\"pm10\": %d,"
+                            "\"longitude\": %s,"
+                            "\"latitude\": %s,"
+                            "\"recorded\": \"%s\""
+                            "}]";
+
+const char* api_key = "PleaseChangeMe";
+const char* latitude = "PleaseChangeMe";
+const char* longitude = "PleaseChangeMe";
+const char* description = "PleaseChangeMe";
+const char* sensor = "PMS5003";
+const char* api_url = "https://rald-dev.greenbeep.com/api/v1/measurements";
+
+// Time keeping
+time_t now;
+struct tm * timeinfo;
+char recorded_template[]        = "%d-%02d-%02dT%02d:%02d:%02d.000Z";
+const int linkaUpdateFrequency = 2000;
+
+// Start HTTP client
+WiFiClientSecure client;
+HTTPClient http;
 
 // Config End ------------------------------------------------------------------
 
@@ -103,6 +140,18 @@ void setup() {
   server.begin();
   Serial.println("HTTP server started at ip " + WiFi.localIP().toString() + ":" + String(port));
   showTextRectangle("Listening To", WiFi.localIP().toString() + ":" + String(port),true);
+
+  // Linkaconfiguration
+  // Configure ntp client
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+  time(&now);
+  timeinfo = localtime(&now);
+  while (timeinfo->tm_year == 70) {
+    delay(500);
+    time(&now);
+    timeinfo = localtime(&now);
+  }
 }
 
 void loop() {
@@ -110,6 +159,64 @@ void loop() {
 
   server.handleClient();
   updateScreen(t);
+  if (pushLinka) {
+    sendLinka(t);
+  }
+}
+
+void sendLinka(long now) {
+  if ((now - lastUpdate) <= linkaUpdateFrequency) {
+    return;
+  }
+
+  char measurements[256];
+  char recorded[27];
+  char source[10];
+
+  sprintf(recorded,
+          recorded_template,
+          timeinfo->tm_year + 1900,
+          timeinfo->tm_mon + 1,
+          timeinfo->tm_mday,
+          timeinfo->tm_hour,
+          timeinfo->tm_min,
+          timeinfo->tm_sec);
+  sprintf(source, "%x", deviceId);
+  sprintf(measurements,
+          http_data_template,
+          sensor,
+          source,
+          description,
+          0,
+          ag.getPM2_Raw(),
+          0,
+          longitude,
+          latitude,
+          recorded);
+  Serial.println(measurements);
+
+  client.setInsecure();
+
+  if (http.begin(client, api_url)) {
+
+    // Add headers
+    http.addHeader("x-api-key", api_key);
+    http.addHeader("Content-Type", "application/json");
+    int httpCode = http.POST(measurements);
+
+    // httpCode will be negative on error
+    if (httpCode > 0) {
+      // HTTP header has been sent and Server response header has been handled
+      Serial.printf("[HTTP] POST... code: %d\n", httpCode);
+    } else {
+      Serial.printf("[HTTP] POST... failed, error: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  }
+  else {
+    Serial.printf("[HTTP] Unable to connect");
+  }
+
 }
 
 String GenerateMetrics() {
