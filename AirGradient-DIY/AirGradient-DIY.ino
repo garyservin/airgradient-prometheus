@@ -216,6 +216,7 @@ void sendLinka(long now) {
   else {
     Serial.printf("[HTTP] Unable to connect");
   }
+  lastUpdate = millis();
 
 }
 
